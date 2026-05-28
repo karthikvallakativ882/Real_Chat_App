@@ -1,8 +1,9 @@
 import axios from "axios";
 
 const API = axios.create({
-  // This tells the app to use the live URL in production, or localhost during development
-  baseURL: import.meta.env.VITE_BACKEND_URL || "http://localhost:5000/api",
+  // Use the live URL if it exists, otherwise use local
+  baseURL: import.meta.env.VITE_BACKEND_URL ? `${import.meta.env.VITE_BACKEND_URL}/api` : "http://localhost:5000/api",
+  withCredentials: true,
 });
 
 // Add a request interceptor to attach the token to every request
