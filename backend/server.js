@@ -14,6 +14,7 @@ import authRoutes from "./routes/authRoutes.js";
 import messageRoutes from "./routes/messageRoutes.js";
 
 import { socketConnection } from "./sockets/socket.js";
+import channelRoutes from "./routes/channelRoutes.js";
 
 dotenv.config();
 
@@ -36,7 +37,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/messages", messageRoutes);
 
 app.use("/api/users", userRoutes);
-
+app.use("/api/channels", channelRoutes);
 
 app.get("/", (req, res) => {
   res.send("API Running");
