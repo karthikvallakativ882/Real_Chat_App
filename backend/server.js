@@ -22,7 +22,11 @@ const app = express();
 
 
 // middleware
-app.use(cors());
+app.use(cors({
+  // Allow BOTH your local frontend and your live Vercel frontend
+  origin: ["http://localhost:5173", "https://real-chat-app-sigma.vercel.app"],
+  credentials: true, 
+}));
 
 app.use(express.json());
 
@@ -51,10 +55,10 @@ const server = http.createServer(app);
 // socket server
 const io = new Server(server, {
   cors: {
-    origin: process.env.FRONTEND_URL
+    origin: ["http://localhost:5173", "https://real-chat-app-sigma.vercel.app"],
+    credentials: true,
   },
 });
-
 
 // socket connection
 socketConnection(io);
