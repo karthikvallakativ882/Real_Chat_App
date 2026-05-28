@@ -11,9 +11,7 @@ export const protect = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
     req.user = decoded.id;
-
     next();
   } catch (error) {
     res.status(401).json({

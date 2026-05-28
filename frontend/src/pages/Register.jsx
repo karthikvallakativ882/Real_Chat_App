@@ -1,6 +1,8 @@
 import { useState } from "react";
+
 import API from "../api/axios";
-import { useNavigate } from "react-router-dom";
+
+import { useNavigate, Link } from "react-router-dom";
 
 const Register = () => {
 
@@ -13,6 +15,7 @@ const Register = () => {
   });
 
   const handleChange = (e) => {
+
     setFormData({
       ...formData,
       [e.target.name]: e.target.value,
@@ -20,9 +23,11 @@ const Register = () => {
   };
 
   const handleSubmit = async (e) => {
+
     e.preventDefault();
 
     try {
+
       const res = await API.post(
         "/auth/register",
         formData
@@ -33,49 +38,68 @@ const Register = () => {
       navigate("/login");
 
     } catch (error) {
+
       alert(error.response.data.message);
     }
   };
 
   return (
-    <div>
+    <div className="min-h-screen flex justify-center items-center bg-gray-100">
 
-      <h1>Register</h1>
+      <form
+        onSubmit={handleSubmit}
+        className="bg-white p-8 rounded shadow-lg w-[350px]"
+      >
 
-      <form onSubmit={handleSubmit}>
+        <h1 className="text-3xl font-bold mb-6 text-center">
+          Register
+        </h1>
 
         <input
           type="text"
           name="username"
           placeholder="Username"
+          className="w-full border p-3 mb-4 rounded"
           onChange={handleChange}
         />
-
-        <br />
 
         <input
           type="email"
           name="email"
           placeholder="Email"
+          className="w-full border p-3 mb-4 rounded"
           onChange={handleChange}
         />
-
-        <br />
 
         <input
           type="password"
           name="password"
           placeholder="Password"
+          className="w-full border p-3 mb-4 rounded"
           onChange={handleChange}
         />
 
-        <br />
-
-        <button type="submit">
+        <button
+          className="bg-green-500 text-white w-full py-3 rounded"
+        >
           Register
         </button>
 
+        <p className="mt-4 text-center">
+
+          Already have account?
+
+          <Link
+            to="/login"
+            className="text-blue-500 ml-2"
+          >
+            Login
+          </Link>
+
+        </p>
+
       </form>
+
     </div>
   );
 };
