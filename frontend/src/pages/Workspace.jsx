@@ -4,6 +4,9 @@ import API from "../api/axios";
 import { AuthContext } from "../context/AuthContext";
 import CreateChannelModal from "../components/CreateChannelModal";
 
+// Predefined set of quick-reactions
+const EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🔥", "👀", "🚀"];
+
 const Workspace = () => {
   const { user } = useContext(AuthContext);
   const scrollRef = useRef();
@@ -19,18 +22,16 @@ const Workspace = () => {
   const [editingMessage, setEditingMessage] = useState(null); 
   const [uploading, setUploading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  
+  // Emoji Picker State
+  const [showPickerFor, setShowPickerFor] = useState(null);
 
   // Refs for Socket Listeners
   const activeDestRef = useRef(activeDestination);
   const activeThreadRef = useRef(activeThread);
 
-  useEffect(() => {
-    activeDestRef.current = activeDestination;
-  }, [activeDestination]);
-
-  useEffect(() => {
-    activeThreadRef.current = activeThread;
-  }, [activeThread]);
+  useEffect(() => { activeDestRef.current = activeDestination; }, [activeDestination]);
+  useEffect(() => { activeThreadRef.current = activeThread; }, [activeThread]);
 
   // 1. Initial Fetch
   useEffect(() => {
@@ -68,14 +69,8 @@ const Workspace = () => {
   useEffect(() => {
     if (!user) return;
 
-    const joinRooms = () => {
-      socket.emit("setup", user);
-    };
-
-    if (socket.connected) {
-      joinRooms();
-    }
-
+    const joinRooms = () => socket.emit("setup", user);
+    if (socket.connected) joinRooms();
     socket.on("connect", joinRooms);
 
     const handleReceive = (newMsg) => {
@@ -86,7 +81,7 @@ const Workspace = () => {
       const incomingReceiverId = typeof newMsg.receiverId === 'object' ? newMsg.receiverId._id : newMsg.receiverId;
       const incomingChannelId = typeof newMsg.channelId === 'object' ? newMsg.channelId?._id : newMsg.channelId;
 
-      // Handle Thread Replies
+      // Thread Replies
       if (newMsg.parentMessageId) {
         if (currentThread && newMsg.parentMessageId === currentThread._id) {
           setThreadMessages((prev) => [...prev, newMsg]);
@@ -94,52 +89,44 @@ const Workspace = () => {
         return;
       }
 
-      // CRITICAL FIX: If no chat is active, drop the message safely
       if (!currentDest) return;
 
-      // Live Channel Injection
       if (currentDest.isChannel) {
-        if (incomingChannelId === currentDest._id) {
-          setMessages((prev) => [...prev, newMsg]);
-        }
-      } 
-      // Live Private DM Injection
-      else {
+        if (incomingChannelId === currentDest._id) setMessages((prev) => [...prev, newMsg]);
+      } else {
         const isFromMeToActiveUser = incomingSenderId === user._id && incomingReceiverId === currentDest._id;
         const isFromActiveUserToMe = incomingSenderId === currentDest._id && incomingReceiverId === user._id;
-
-        if (isFromMeToActiveUser || isFromActiveUserToMe) {
-          setMessages((prev) => [...prev, newMsg]);
-        }
+        if (isFromMeToActiveUser || isFromActiveUserToMe) setMessages((prev) => [...prev, newMsg]);
       }
     };
 
-    const handleEdit = (updatedMsg) => {
-      setMessages((prev) => 
-        prev.map(msg => msg._id === updatedMsg._id ? updatedMsg : msg)
-      );
+    // Update messages when edited OR reacted to
+    const handleUpdate = (updatedMsg) => {
+      setMessages((prev) => prev.map(msg => msg._id === updatedMsg._id ? updatedMsg : msg));
+      setThreadMessages((prev) => prev.map(msg => msg._id === updatedMsg._id ? updatedMsg : msg));
+      // If the parent thread message gets a reaction, update the sidebar header too
+      if (activeThreadRef.current && activeThreadRef.current._id === updatedMsg._id) {
+        setActiveThread(updatedMsg);
+      }
     };
 
     socket.on("receiveMessage", handleReceive);
-    socket.on("messageUpdated", handleEdit);
+    socket.on("messageUpdated", handleUpdate);
+    socket.on("messageReacted", handleUpdate);
 
     return () => {
       socket.off("connect", joinRooms);
       socket.off("receiveMessage", handleReceive);
-      socket.off("messageUpdated", handleEdit);
+      socket.off("messageUpdated", handleUpdate);
+      socket.off("messageReacted", handleUpdate);
     };
   }, [user]); 
 
-  // Auto Scroll Engine
-  useEffect(() => {
-    scrollRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  // Auto Scroll
+  useEffect(() => { scrollRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  useEffect(() => { threadScrollRef.current?.scrollIntoView({ behavior: "smooth" }); }, [threadMessages]);
 
-  useEffect(() => {
-    threadScrollRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [threadMessages]);
-
-  // 4. Send Message Controller
+  // 4. Send Message Core
   const handleSubmit = async (text, fileUrl = "") => {
     if (!text.trim() && !fileUrl) return;
 
@@ -167,14 +154,31 @@ const Workspace = () => {
       } else {
         setMessages((prev) => [...prev, res.data]);
       }
-
       socket.emit("sendMessage", res.data);
     } catch (error) {
       console.error("Message transmission failed", error);
     }
   };
 
-  // 5. Cloudinary Storage Management
+  // 5. Reaction Core
+  const handleReaction = async (messageId, emoji) => {
+    try {
+      const res = await API.put(`/messages/${messageId}/react`, { emoji });
+      
+      // Update locally instantly
+      setMessages((prev) => prev.map(msg => msg._id === res.data._id ? res.data : msg));
+      setThreadMessages((prev) => prev.map(msg => msg._id === res.data._id ? res.data : msg));
+      if (activeThread?._id === res.data._id) setActiveThread(res.data);
+      
+      // Broadcast via socket
+      socket.emit("addReaction", res.data);
+      setShowPickerFor(null);
+    } catch (error) {
+      console.error("Reaction failed", error);
+    }
+  };
+
+  // 6. Cloudinary
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -189,12 +193,8 @@ const Workspace = () => {
     data.append("cloud_name", cloudName);           
     
     try {
-      const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
-        method: "POST",
-        body: data,
-      });
+      const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, { method: "POST", body: data });
       const cloudData = await res.json();
-      
       if (cloudData.secure_url) {
          handleSubmit("Sent an attachment 📎", cloudData.secure_url);
       } else {
@@ -207,10 +207,7 @@ const Workspace = () => {
     }
   };
 
-  const getDownloadUrl = (url) => {
-    if (!url) return "";
-    return url.replace("/upload/", "/upload/fl_attachment/");
-  };
+  const getDownloadUrl = (url) => url ? url.replace("/upload/", "/upload/fl_attachment/") : "";
 
   const handleChannelCreated = (newChannel) => {
     setChannels((prev) => [...prev, newChannel]);
@@ -218,51 +215,104 @@ const Workspace = () => {
     socket.emit("setup", user);
   };
 
+  // UI HELPER: Reusable Message Component
+  const MessageBubble = ({ msg, isThreadView = false }) => {
+    const isMe = (typeof msg.senderId === 'object' ? msg.senderId._id : msg.senderId) === user._id;
+    
+    return (
+      <div className={`flex flex-col max-w-[85%] group ${isMe && !isThreadView ? "self-end items-end" : "self-start items-start"} relative`}>
+        <div className="flex items-center gap-2 mb-1 px-1">
+          <span className="text-xs font-bold text-gray-600">{isMe ? "You" : (msg.senderId?.username || "User")}</span>
+          <span className="text-[9px] text-gray-400">{new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+        </div>
+
+        <div className={`p-3 rounded-2xl text-sm shadow-xs relative ${isMe && !isThreadView ? "bg-[#1164A3] text-white rounded-tr-none" : "bg-white text-gray-800 border border-gray-200 rounded-tl-none"}`}>
+          <p className="whitespace-pre-wrap break-words">{msg.text}</p>
+          {msg.fileUrl && (
+            <div className="mt-2 rounded-lg overflow-hidden border bg-gray-100 p-1 flex flex-col gap-1 max-w-[240px]">
+              <img src={msg.fileUrl} alt="attachment" className="w-full h-auto max-h-32 object-cover rounded" />
+              <a href={getDownloadUrl(msg.fileUrl)} download className="bg-white text-[#1164A3] hover:bg-gray-50 text-[11px] font-bold py-1 px-2 rounded border text-center block shadow-2xs transition">
+                📥 Download
+              </a>
+            </div>
+          )}
+        </div>
+
+        {/* REACTION BUBBLES */}
+        {msg.reactions && msg.reactions.length > 0 && (
+          <div className={`flex flex-wrap gap-1 mt-1 ${isMe && !isThreadView ? "justify-end" : "justify-start"}`}>
+            {msg.reactions.map(r => {
+              const hasReacted = r.users.includes(user._id);
+              return (
+                <button 
+                  key={r.emoji} 
+                  onClick={() => handleReaction(msg._id, r.emoji)}
+                  className={`text-[11px] px-1.5 py-0.5 rounded-full border flex items-center gap-1 transition ${hasReacted ? 'bg-blue-100 border-blue-300' : 'bg-white border-gray-300 hover:bg-gray-100'}`}
+                >
+                  <span>{r.emoji}</span>
+                  <span className={hasReacted ? 'text-blue-700 font-bold' : 'text-gray-600'}>{r.users.length}</span>
+                </button>
+              )
+            })}
+          </div>
+        )}
+
+        {/* INLINE ACTIONS (Hover to reveal) */}
+        <div className={`flex gap-3 text-[11px] font-semibold mt-1 px-1 opacity-0 group-hover:opacity-100 transition absolute ${isMe && !isThreadView ? "-left-20 top-4" : "-right-24 top-4"} bg-white border shadow-sm rounded-lg p-1 z-10`}>
+          <div className="relative">
+            <button onClick={() => setShowPickerFor(showPickerFor === msg._id ? null : msg._id)} className="hover:bg-gray-100 p-1 rounded" title="Add Reaction">😀</button>
+            
+            {/* EMOJI PICKER POPOVER */}
+            {showPickerFor === msg._id && (
+              <div className="absolute top-8 -left-4 bg-white border shadow-xl rounded-lg p-2 flex gap-1 z-50 w-max">
+                {EMOJIS.map(e => (
+                  <button key={e} onClick={() => handleReaction(msg._id, e)} className="hover:bg-gray-100 text-lg p-1 rounded transition hover:scale-125">{e}</button>
+                ))}
+              </div>
+            )}
+          </div>
+          
+          {!isThreadView && (
+            <button onClick={async () => {
+              setActiveThread(msg);
+              try {
+                const res = await API.get(`/messages/${msg._id}?isThread=true`);
+                setThreadMessages(res.data);
+              } catch (err) { console.error(err); }
+            }} className="hover:bg-gray-100 p-1 rounded" title="Reply in Thread">💬</button>
+          )}
+          
+          {isMe && <button onClick={() => setEditingMessage(msg)} className="hover:bg-gray-100 p-1 rounded" title="Edit Message">✏️</button>}
+        </div>
+      </div>
+    );
+  };
+
   return (
-    <div className="flex h-screen bg-gray-50 text-gray-800 font-sans">
+    <div className="flex h-screen bg-gray-50 text-gray-800 font-sans overflow-hidden">
       
       {/* SIDEBAR NAVIGATION */}
-      <div className="w-64 bg-[#3F0E40] text-white flex flex-col shadow-lg">
-        <div className="p-4 font-bold text-xl border-b border-white/10">
-          Slack Workspace
-        </div>
-        
+      <div className="w-64 bg-[#3F0E40] text-white flex flex-col shadow-lg z-20">
+        <div className="p-4 font-bold text-xl border-b border-white/10">Slack Workspace</div>
         <div className="flex-1 overflow-y-auto p-4 select-none">
           <div className="flex justify-between items-center mb-3 mt-2 text-gray-300">
             <h3 className="font-semibold text-xs uppercase tracking-wider">Channels</h3>
-            <button 
-              onClick={() => setIsModalOpen(true)} 
-              className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-2 py-1 rounded transition font-medium shadow-sm"
-            >
-              + Create
-            </button>
+            <button onClick={() => setIsModalOpen(true)} className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-2 py-1 rounded transition font-medium shadow-sm">+ Create</button>
           </div>
-          
           <div className="mb-6 border-b border-white/10 pb-4 flex flex-col gap-1">
             {channels.map(c => (
-              <div 
-                key={c._id} 
-                onClick={() => { setActiveDestination({ ...c, isChannel: true }); setActiveThread(null); }}
-                className={`cursor-pointer px-3 py-2 rounded-md transition font-medium text-sm flex items-center gap-1 ${activeDestination?.isChannel && activeDestination?._id === c._id ? "bg-[#1164A3] text-white shadow" : "hover:bg-white/10 text-gray-300"}`}
-              >
+              <div key={c._id} onClick={() => { setActiveDestination({ ...c, isChannel: true }); setActiveThread(null); }} className={`cursor-pointer px-3 py-2 rounded-md transition font-medium text-sm flex items-center gap-1 ${activeDestination?.isChannel && activeDestination?._id === c._id ? "bg-[#1164A3] text-white shadow" : "hover:bg-white/10 text-gray-300"}`}>
                 <span className="text-gray-400">#</span> {c.name}
               </div>
             ))}
           </div>
-
           <div className="mb-3 text-gray-300">
             <h3 className="font-semibold text-xs uppercase tracking-wider">Direct Messages</h3>
           </div>
           <div className="flex flex-col gap-1">
             {users.map(u => (
-              <div 
-                key={u._id} 
-                onClick={() => { setActiveDestination({ ...u, isChannel: false }); setActiveThread(null); }}
-                className={`cursor-pointer px-3 py-2 rounded-md transition flex items-center gap-2 text-sm ${!activeDestination?.isChannel && activeDestination?._id === u._id ? "bg-[#1164A3] text-white shadow" : "hover:bg-white/10 text-gray-300"}`}
-              >
-                <div className="w-5 h-5 rounded-full bg-blue-500 flex justify-center items-center text-[10px] font-bold text-white shadow-sm">
-                  {u.username[0].toUpperCase()}
-                </div>
+              <div key={u._id} onClick={() => { setActiveDestination({ ...u, isChannel: false }); setActiveThread(null); }} className={`cursor-pointer px-3 py-2 rounded-md transition flex items-center gap-2 text-sm ${!activeDestination?.isChannel && activeDestination?._id === u._id ? "bg-[#1164A3] text-white shadow" : "hover:bg-white/10 text-gray-300"}`}>
+                <div className="w-5 h-5 rounded-full bg-blue-500 flex justify-center items-center text-[10px] font-bold text-white shadow-sm">{u.username[0].toUpperCase()}</div>
                 <span>{u.username}</span>
               </div>
             ))}
@@ -270,114 +320,38 @@ const Workspace = () => {
         </div>
       </div>
 
-      {/* CORE DISPLAY HUB */}
-      <div className="flex-1 flex flex-col bg-white">
-        <div className="p-4 border-b font-bold text-lg shadow-sm flex items-center gap-2 bg-white">
+      {/* MAIN DISPLAY HUB */}
+      <div className="flex-1 flex flex-col bg-white relative z-10">
+        <div className="p-4 border-b font-bold text-lg shadow-sm flex items-center gap-2 bg-white z-10">
           {activeDestination ? (
-            <>
-              {activeDestination.isChannel ? <span className="text-gray-400 text-xl">#</span> : <div className="w-6 h-6 rounded bg-blue-500 flex justify-center items-center text-xs text-white shadow-sm">{activeDestination.username[0].toUpperCase()}</div>}
-              <span>{activeDestination.name || activeDestination.username}</span>
-            </>
-          ) : (
-            <span className="text-gray-400 font-normal text-base">Select a conversation context to begin chatting</span>
-          )}
+            <>{activeDestination.isChannel ? <span className="text-gray-400 text-xl">#</span> : <div className="w-6 h-6 rounded bg-blue-500 flex justify-center items-center text-xs text-white shadow-sm">{activeDestination.username[0].toUpperCase()}</div>}<span>{activeDestination.name || activeDestination.username}</span></>
+          ) : <span className="text-gray-400 font-normal text-base">Select a conversation to begin</span>}
         </div>
         
-        {/* NEW HIGH-VISIBILITY MESSAGES CHAT LOG */}
-        <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-3 bg-gray-50">
-          {messages.map(msg => {
-            const isMe = (typeof msg.senderId === 'object' ? msg.senderId._id : msg.senderId) === user._id;
-            
-            return (
-              <div 
-                key={msg._id} 
-                className={`flex flex-col max-w-[70%] group ${isMe ? "self-end items-end" : "self-start items-start"}`}
-              >
-                {/* Username Header Labels */}
-                <div className="flex items-center gap-2 mb-1 px-1">
-                  <span className="text-xs font-bold text-gray-600">
-                    {isMe ? "You" : (msg.senderId?.username || "User")}
-                  </span>
-                  <span className="text-[9px] text-gray-400">
-                    {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                </div>
-
-                {/* Styled Chat Bubble */}
-                <div className={`p-3 rounded-2xl text-sm shadow-xs ${
-                  isMe 
-                    ? "bg-[#1164A3] text-white rounded-tr-none" 
-                    : "bg-white text-gray-800 border border-gray-200 rounded-tl-none"
-                }`}>
-                  <p className="whitespace-pre-wrap break-words">{msg.text}</p>
-                  
-                  {msg.fileUrl && (
-                    <div className="mt-2 rounded-lg overflow-hidden border bg-gray-100 p-1 flex flex-col gap-1 max-w-[240px]">
-                      <img src={msg.fileUrl} alt="attachment" className="w-full h-auto max-h-32 object-cover rounded" />
-                      <a 
-                        href={getDownloadUrl(msg.fileUrl)} 
-                        download 
-                        className="bg-white text-[#1164A3] hover:bg-gray-50 text-[11px] font-bold py-1 px-2 rounded border text-center block shadow-2xs transition"
-                      >
-                        📥 Download
-                      </a>
-                    </div>
-                  )}
-                </div>
-
-                {/* Inline Interaction Triggers */}
-                <div className={`flex gap-3 text-[10px] font-semibold mt-1 px-1 opacity-0 group-hover:opacity-100 transition ${isMe ? "flex-row-reverse" : ""}`}>
-                  <button 
-                    onClick={async () => {
-                      setActiveThread(msg);
-                      try {
-                        const res = await API.get(`/messages/${msg._id}?isThread=true`);
-                        setThreadMessages(res.data);
-                      } catch (err) {
-                        console.error(err);
-                      }
-                    }} 
-                    className="text-blue-600 hover:underline"
-                  >
-                    💬 Reply
-                  </button>
-                  {isMe && (
-                    <button onClick={() => setEditingMessage(msg)} className="text-amber-600 hover:underline">✏️ Edit</button>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+        {/* MESSAGES LOG */}
+        <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-6 bg-gray-50 pb-20">
+          {messages.map(msg => <MessageBubble key={msg._id} msg={msg} />)}
           <div ref={scrollRef}></div>
         </div>
 
-        {/* INPUT COMPOSER DOCK BAR */}
-        <div className="p-4 border-t bg-gray-50 flex flex-col gap-2">
+        {/* COMPOSER DOCK */}
+        <div className="p-4 border-t bg-white flex flex-col gap-2 z-10 relative shadow-[0_-4px_10px_rgba(0,0,0,0.02)]">
           {editingMessage && (
             <div className="text-xs text-amber-700 flex justify-between bg-amber-50 p-2 rounded border border-amber-200 items-center">
-              <span>Modifying current selection entry...</span>
-              <button onClick={() => setEditingMessage(null)} className="font-bold hover:underline">Cancel</button>
+              <span>Modifying entry...</span><button onClick={() => setEditingMessage(null)} className="font-bold hover:underline">Cancel</button>
             </div>
           )}
-          
           <div className="flex items-center gap-2">
-            <label className="cursor-pointer bg-white border border-gray-300 hover:bg-gray-100 text-gray-600 p-3 rounded-xl flex justify-center items-center transition shadow-sm active:scale-95">
+            <label className="cursor-pointer bg-gray-100 border border-gray-300 hover:bg-gray-200 text-gray-600 p-3 rounded-xl flex justify-center items-center transition shadow-sm active:scale-95">
               <span className="text-lg leading-none">📎</span>
               <input type="file" onChange={handleFileUpload} className="hidden" accept="image/*" disabled={!activeDestination || uploading} />
             </label>
-            
             <div className="flex-1 border border-gray-300 rounded-xl bg-white shadow-sm focus-within:ring-2 focus-within:ring-blue-500 overflow-hidden flex items-center">
               <input 
                 type="text" 
-                placeholder={uploading ? "Uploading attachment asset..." : !activeDestination ? "Please click on a conversation" : `Message ${activeDestination?.name ? '#' + activeDestination.name : activeDestination?.username}`}
+                placeholder={uploading ? "Uploading..." : !activeDestination ? "Select conversation" : `Message ${activeDestination?.name ? '#' + activeDestination.name : activeDestination?.username}`}
                 disabled={!activeDestination || uploading}
-                onKeyDown={(e) => { 
-                  if(e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    handleSubmit(e.target.value); 
-                    e.target.value="";
-                  } 
-                }}
+                onKeyDown={(e) => { if(e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit(e.target.value); e.target.value=""; } }}
                 className="w-full p-3 text-sm outline-none disabled:bg-gray-100 text-gray-800"
               />
             </div>
@@ -385,62 +359,31 @@ const Workspace = () => {
         </div>
       </div>
 
-      {/* SUB-THREAD CONTEXT SIDE PANEL */}
+      {/* THREAD SYSTEM CONTEXT SLIDEOUT */}
       {activeThread && (
-        <div className="w-80 bg-gray-50 shadow-2xl flex flex-col border-l">
-          <div className="p-4 border-b font-bold flex justify-between items-center bg-white shadow-sm">
-            <span className="text-sm font-bold">Thread Window</span>
+        <div className="w-80 bg-gray-50 shadow-2xl flex flex-col border-l z-30">
+          <div className="p-4 border-b font-bold flex justify-between items-center bg-white shadow-sm z-10">
+            <span className="text-sm font-bold">Thread</span>
             <button onClick={() => setActiveThread(null)} className="text-gray-400 hover:text-gray-700 text-sm">✖</button>
           </div>
           
-          <div className="flex-1 p-4 overflow-y-auto flex flex-col gap-3">
-             <div className="pb-3 border-b border-gray-200">
-               <strong className="font-semibold text-gray-900 text-sm">{activeThread.senderId?.username}</strong>
-               <p className="text-gray-700 text-sm mt-0.5">{activeThread.text}</p>
-               {activeThread.fileUrl && (
-                 <div className="mt-2 rounded-lg border max-w-full shadow-sm bg-white p-2 flex flex-col gap-2">
-                   <img src={activeThread.fileUrl} alt="thread asset" className="max-w-full rounded h-auto" />
-                   <a 
-                     href={getDownloadUrl(activeThread.fileUrl)} 
-                     download={`Thread_File_${activeThread._id}.jpg`}
-                     className="w-full bg-blue-50 hover:bg-blue-100 text-[#1164A3] text-xs font-semibold py-1 px-2 rounded text-center block transition border border-blue-200"
-                   >
-                     📥 Download
-                   </a>
-                 </div>
-               )}
-             </div>
-             
-             {threadMessages.map(reply => (
-                <div key={reply._id} className="flex flex-col bg-white p-2 rounded border border-gray-100 shadow-2xs">
-                  <strong className="font-semibold text-xs text-gray-800">{reply.senderId?.username || "User"}</strong>
-                  <p className="text-gray-600 text-xs mt-0.5">{reply.text}</p>
-                </div>
-             ))}
+          <div className="flex-1 p-4 overflow-y-auto flex flex-col gap-4">
+             <div className="pb-3 border-b border-gray-200"><MessageBubble msg={activeThread} isThreadView={true} /></div>
+             {threadMessages.map(reply => <MessageBubble key={reply._id} msg={reply} isThreadView={true} />)}
              <div ref={threadScrollRef}></div>
           </div>
 
-          <div className="p-4 border-t bg-white">
+          <div className="p-4 border-t bg-white z-10 shadow-[0_-4px_10px_rgba(0,0,0,0.02)]">
             <input 
               type="text" 
-              placeholder="Reply to thread..."
-              onKeyDown={(e) => { 
-                if (e.key === "Enter" && e.target.value.trim()) {
-                  handleSubmit(e.target.value); 
-                  e.target.value = "";
-                } 
-              }}
-              className="w-full p-2 text-xs border rounded-lg outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              placeholder="Reply..."
+              onKeyDown={(e) => { if (e.key === "Enter" && e.target.value.trim()) { handleSubmit(e.target.value); e.target.value = ""; } }}
+              className="w-full p-2 text-sm border rounded-lg outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500 shadow-sm"
             />
           </div>
         </div>
       )}
-      
-      <CreateChannelModal 
-        isOpen={isModalOpen} 
-        onClose={() => setIsModalOpen(false)} 
-        onChannelCreated={handleChannelCreated} 
-      />
+      <CreateChannelModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onChannelCreated={handleChannelCreated} />
     </div>
   );
 };
