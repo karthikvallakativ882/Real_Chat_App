@@ -12,19 +12,25 @@ const Chat = () => {
     useState(null);
 
   return (
-    <div className="h-screen flex flex-col">
+    <div className="h-screen flex flex-col overflow-hidden">
 
       <Navbar />
 
-      <div className="flex flex-1">
+      <div className="flex flex-1 flex-col md:flex-row overflow-hidden">
 
-        <OnlineUsers
-          setSelectedUser={setSelectedUser}
-        />
+        {/* Sidebar */}
+        <div className="w-full md:w-[320px] border-b md:border-b-0 md:border-r overflow-y-auto">
+          <OnlineUsers
+            setSelectedUser={setSelectedUser}
+          />
+        </div>
 
-        <ChatBox
-          selectedUser={selectedUser}
-        />
+        {/* Chat Area */}
+        <div className="flex-1 overflow-hidden">
+          <ChatBox
+            selectedUser={selectedUser}
+          />
+        </div>
 
       </div>
 
