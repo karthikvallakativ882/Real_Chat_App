@@ -4,9 +4,18 @@ import API from "../api/axios";
 
 import { useNavigate, Link } from "react-router-dom";
 
+import { toast, ToastContainer } from "react-toastify";
+
+import "react-toastify/dist/ReactToastify.css";
+
+import { Eye, EyeOff } from "lucide-react";
+
 const Register = () => {
 
   const navigate = useNavigate();
+
+  const [showPassword, setShowPassword] =
+    useState(false);
 
   const [formData, setFormData] = useState({
     username: "",
@@ -33,18 +42,25 @@ const Register = () => {
         formData
       );
 
-      alert(res.data.message);
+      toast.success(res.data.message);
 
-      navigate("/login");
+      setTimeout(() => {
+        navigate("/login");
+      }, 1500);
 
     } catch (error) {
 
-      alert(error.response.data.message);
+      toast.error(
+        error.response?.data?.message ||
+        "Something went wrong"
+      );
     }
   };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-green-100 via-white to-blue-100 px-4 py-8">
+
+      <ToastContainer position="top-right" />
 
       <form
         onSubmit={handleSubmit}
@@ -79,13 +95,36 @@ const Register = () => {
           onChange={handleChange}
         />
 
-        <input
-          type="password"
-          name="password"
-          placeholder="Password"
-          className="w-full border border-gray-300 bg-gray-50 focus:bg-white focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none p-3 sm:p-4 mb-5 rounded-xl transition-all duration-200"
-          onChange={handleChange}
-        />
+        {/* Password Input */}
+        <div className="relative mb-5">
+
+          <input
+            type={
+              showPassword
+                ? "text"
+                : "password"
+            }
+            name="password"
+            placeholder="Password"
+            className="w-full border border-gray-300 bg-gray-50 focus:bg-white focus:border-green-500 focus:ring-2 focus:ring-green-200 outline-none p-3 sm:p-4 rounded-xl transition-all duration-200 pr-12"
+            onChange={handleChange}
+          />
+
+          <button
+            type="button"
+            onClick={() =>
+              setShowPassword(!showPassword)
+            }
+            className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700"
+          >
+            {
+              showPassword
+                ? <EyeOff size={22} />
+                : <Eye size={22} />
+            }
+          </button>
+
+        </div>
 
         <button
           className="w-full bg-green-500 hover:bg-green-600 text-white py-3 sm:py-4 rounded-xl font-semibold text-lg shadow-md hover:shadow-lg transition-all duration-200"
