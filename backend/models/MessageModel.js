@@ -40,7 +40,14 @@ const messageSchema = new mongoose.Schema(
         emoji: String,
         users: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }]
       }
-    ]
+    ],
+    isDeletedForEveryone: 
+    { type: Boolean, 
+      default: false 
+    },
+    deletedFor: [{ 
+      type: mongoose.Schema.Types.ObjectId, ref: "User" 
+    }]
   },
   { timestamps: true }
 );

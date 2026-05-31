@@ -1,8 +1,13 @@
 import axios from "axios";
 
+// --- NEW LOGIC ADDED: Dynamic URL switching ---
+const backendURL = import.meta.env.DEV 
+  ? "http://localhost:5000/api" 
+  : "https://real-chat-app-nzkj.onrender.com/api"; // <-- Put your actual Render URL here
+// ----------------------------------------------
+
 const API = axios.create({
-  // Use the live URL if it exists, otherwise use local
-  baseURL: import.meta.env.VITE_BACKEND_URL ? `${import.meta.env.VITE_BACKEND_URL}/api` : "http://localhost:5000/api",
+  baseURL: backendURL,
   withCredentials: true,
 });
 

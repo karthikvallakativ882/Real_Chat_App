@@ -41,42 +41,6 @@ export const editMessage = async (req, res) => {
   }
 };
 
-// GET MESSAGES (Handles Channel, DM, and Threads)
-// GET MESSAGES (Handles Channel, DM, and Threads)
-export const getMessages = async (req, res) => {
-  try {
-    const { destinationId } = req.params; 
-    const { isThread, isChannel } = req.query; 
-
-    let query = {};
-
-    if (isThread === "true") {
-      // Fetch replies to a specific thread
-      query = { parentMessageId: destinationId };
-    } else if (isChannel === "true") {
-      // Fetch channel messages
-      query = { parentMessageId: null, channelId: destinationId };
-    } else {
-      // Fetch 1-on-1 Direct Messages between current user and destinationId
-      query = {
-        parentMessageId: null,
-        channelId: null,
-        $or: [
-          { senderId: req.user, receiverId: destinationId },
-          { senderId: destinationId, receiverId: req.user }
-        ]
-      };
-    }
-
-    const messages = await MessageModel.find(query)
-      .populate("senderId", "username profilePic")
-      .sort({ createdAt: 1 });
-
-    res.status(200).json(messages);
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-};
 
 // TOGGLE EMOJI REACTION
 export const toggleReaction = async (req, res) => {
@@ -114,6 +78,106 @@ export const toggleReaction = async (req, res) => {
     await message.populate("senderId", "username profilePic");
 
     res.status(200).json(message);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+
+
+//  UPDATE GET MESSAGES to filter out "deleted for me"
+export const getMessages = async (req, res) => {
+  try {
+    const { destinationId } = req.params; 
+    const { isThread, isChannel } = req.query; 
+
+    // Base query hides messages where the current user is in the deletedFor array
+    let query = { deletedFor: { $ne: req.user } };
+
+    if (isThread === "true") {
+      query.parentMessageId = destinationId;
+    } else if (isChannel === "true") {
+      query.parentMessageId = null;
+      query.channelId = destinationId;
+    } else {
+      query.parentMessageId = null;
+      query.channelId = null;
+      query.$or = [
+        { senderId: req.user, receiverId: destinationId },
+        { senderId: destinationId, receiverId: req.user }
+      ];
+    }
+
+    const messages = await MessageModel.find(query)
+      .populate("senderId", "username profilePic")
+      .sort({ createdAt: 1 });
+
+    res.status(200).json(messages);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+//  NEW: DELETE MESSAGE (Me / Everyone)
+export const deleteMessage = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { type } = req.body; // Expects "me" or "everyone"
+    const userId = req.user;
+
+    const message = await MessageModel.findById(messageId);
+    if (!message) return res.status(404).json({ message: "Message not found" });
+
+    if (type === "everyone") {
+      // Only the sender can delete for everyone
+      if (String(message.senderId) !== String(userId)) {
+        return res.status(403).json({ message: "Unauthorized to delete for everyone" });
+      }
+      message.isDeletedForEveryone = true;
+      message.text = "🚫 This message was deleted"; 
+      message.fileUrl = ""; // Scrub the file link for privacy
+    } else if (type === "me") {
+      // Add user ID to the deletedFor array
+      if (!message.deletedFor.includes(userId)) {
+        message.deletedFor.push(userId);
+      }
+    }
+
+    await message.save();
+    await message.populate("senderId", "username profilePic");
+
+    res.status(200).json(message);
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+};
+
+//  NEW: CLEAR ENTIRE CHAT
+export const clearChat = async (req, res) => {
+  try {
+    const { destinationId } = req.params;
+    const { isChannel } = req.query;
+    const userId = req.user;
+
+    let filter = {};
+    if (isChannel === "true") {
+      filter = { channelId: destinationId };
+    } else {
+      filter = {
+        $or: [
+          { senderId: userId, receiverId: destinationId },
+          { senderId: destinationId, receiverId: userId }
+        ]
+      };
+    }
+
+    // Add current user to 'deletedFor' on all matched messages
+    await MessageModel.updateMany(
+      filter,
+      { $addToSet: { deletedFor: userId } }
+    );
+
+    res.status(200).json({ message: "Chat cleared successfully" });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }

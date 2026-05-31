@@ -47,7 +47,7 @@ export const socketConnection = (io) => {
       }
     });
 
-    // 🚨 3. THE FIX: SMART UPDATE BROADCASTER FOR EDITS & REACTIONS 🚨
+    //  3. THE FIX: SMART UPDATE BROADCASTER FOR EDITS & REACTIONS 🚨
     const broadcastUpdate = (eventName, updatedMessage) => {
       const channelId = updatedMessage.channelId;
       
@@ -72,6 +72,14 @@ export const socketConnection = (io) => {
     // Route emojis through the smart broadcaster
     socket.on("addReaction", (updatedMessage) => {
       broadcastUpdate("messageReacted", updatedMessage);
+    });
+
+//  NEW: Route deletions through the smart broadcaster
+    socket.on("deleteMessage", (updatedMessage) => {
+      // If deleted for everyone, broadcast it so the other person's UI updates
+      if (updatedMessage.isDeletedForEveryone) {
+        broadcastUpdate("messageDeleted", updatedMessage);
+      }
     });
 
     // 4. DISCONNECT LOGIC

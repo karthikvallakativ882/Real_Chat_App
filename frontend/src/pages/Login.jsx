@@ -6,6 +6,10 @@ import { AuthContext } from "../context/AuthContext";
 
 import { useNavigate, Link } from "react-router-dom";
 
+// --- NEW LOGIC ADDED: Import eye icons from lucide-react ---
+import { Eye, EyeOff } from "lucide-react";
+// -----------------------------------------------------------
+
 const Login = () => {
 
   const navigate = useNavigate();
@@ -16,6 +20,10 @@ const Login = () => {
     email: "",
     password: "",
   });
+
+  // --- NEW LOGIC ADDED: State to track password visibility ---
+  const [showPassword, setShowPassword] = useState(false);
+  // -----------------------------------------------------------
 
   const handleChange = (e) => {
     setFormData({
@@ -75,13 +83,24 @@ const Login = () => {
           onChange={handleChange}
         />
 
-        <input
-          type="password"
-          name="password"
-          placeholder="Password"
-          className="w-full border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none p-3 mb-5 rounded-lg transition"
-          onChange={handleChange}
-        />
+        {/* --- NEW LOGIC ADDED: Password Wrapper with toggle icon --- */}
+        <div className="relative mb-5">
+          <input
+            type={showPassword ? "text" : "password"}
+            name="password"
+            placeholder="Password"
+            className="w-full border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none p-3 pr-10 rounded-lg transition"
+            onChange={handleChange}
+          />
+          <button
+            type="button"
+            onClick={() => setShowPassword(!showPassword)}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-700 transition"
+          >
+            {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
+          </button>
+        </div>
+        {/* ---------------------------------------------------------- */}
 
         <button
           className="bg-blue-500 hover:bg-blue-600 transition text-white w-full py-3 rounded-lg font-semibold text-lg"
