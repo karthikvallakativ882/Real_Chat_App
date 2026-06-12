@@ -2,17 +2,24 @@ import { useEffect, useState, useContext, useRef } from "react";
 import { socket } from "../socket/socket";
 import API from "../api/axios";
 import { AuthContext } from "../context/AuthContext";
+import { useNavigate } from "react-router-dom"; 
 import CreateChannelModal from "../components/CreateChannelModal";
 import SettingsModal from "../components/SettingsModal";
-import { Menu, X, Settings } from "lucide-react";
+import { Menu, X, Settings, LogOut } from "lucide-react";
 
 const EMOJIS = ["👍", "❤️", "😂", "😮", "😢", "🔥", "👀", "🚀"];
 
 const Workspace = () => {
-  const { user } = useContext(AuthContext);
+  const { user, setUser } = useContext(AuthContext); 
+  const navigate = useNavigate(); 
+  
   const scrollRef = useRef();
   const threadScrollRef = useRef();
   
+  // --- NEW LOGIC ADDED: Refs for the Typing Timeout ---
+  const typingTimeoutRef = useRef(null);
+  // ----------------------------------------------------
+
   const [channels, setChannels] = useState([]);
   const [users, setUsers] = useState([]); 
   const [activeDestination, setActiveDestination] = useState(null); 
@@ -25,19 +32,46 @@ const Workspace = () => {
   const [showPickerFor, setShowPickerFor] = useState(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-
-  // --- NEW LOGIC ADDED: State for the Delete Menu ---
   const [messageToDelete, setMessageToDelete] = useState(null);
-  // --------------------------------------------------
 
   const [onlineUserIds, setOnlineUserIds] = useState([]);
   const [unreadCounts, setUnreadCounts] = useState({}); 
+
+  // --- NEW LOGIC ADDED: State to manage UI typing indicators ---
+  const [isTyping, setIsTyping] = useState(false);
+  const [typingUser, setTypingUser] = useState("");
+  // -------------------------------------------------------------
 
   const activeDestRef = useRef(activeDestination);
   const activeThreadRef = useRef(activeThread);
 
   useEffect(() => { activeDestRef.current = activeDestination; }, [activeDestination]);
   useEffect(() => { activeThreadRef.current = activeThread; }, [activeThread]);
+
+  const handleLogout = () => {
+    if (window.confirm("Are you sure you want to log out?")) {
+      localStorage.removeItem("user");
+      localStorage.removeItem("token");
+      setUser(null);
+      if (socket.connected) socket.disconnect();
+      navigate("/login");
+    }
+  };
+
+  const formatLastSeen = (dateString) => {
+    if (!dateString) return "recently";
+    const date = new Date(dateString);
+    const now = new Date();
+    const isToday = date.getDate() === now.getDate() && date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    const isYesterday = date.getDate() === yesterday.getDate() && date.getMonth() === yesterday.getMonth() && date.getFullYear() === yesterday.getFullYear();
+    const timeString = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', hour12: true });
+
+    if (isToday) return `today at ${timeString}`;
+    if (isYesterday) return `yesterday at ${timeString}`;
+    return `${date.toLocaleDateString([], { month: 'short', day: 'numeric' })} at ${timeString}`;
+  };
 
   const bubbleToTop = (id, isChannel) => {
     if (isChannel) {
@@ -78,9 +112,24 @@ const Workspace = () => {
   }, [user?._id]);
 
   useEffect(() => {
+    if (channels.length > 0) {
+      channels.forEach(channel => {
+        socket.emit("joinRoom", channel._id);
+      });
+    }
+  }, [channels]);
+
+  useEffect(() => {
     if (!activeDestination) return;
-    
     setUnreadCounts(prev => ({ ...prev, [activeDestination._id]: 0 }));
+    
+    // Clear typing indicators when switching chats
+    setIsTyping(false);
+    setTypingUser("");
+
+    if (activeDestination.isChannel) {
+      socket.emit("joinRoom", activeDestination._id);
+    }
 
     const fetchHistory = async () => {
       try {
@@ -97,19 +146,53 @@ const Workspace = () => {
   useEffect(() => {
     if (!user) return;
 
-    const joinRooms = () => socket.emit("setup", user);
+    if (!socket.connected) socket.connect(); 
+
+    const joinRooms = () => {
+      socket.emit("setup", user);
+      channels.forEach(c => socket.emit("joinRoom", c._id));
+    };
+    
     if (socket.connected) joinRooms();
     socket.on("connect", joinRooms);
 
     socket.on("getOnlineUsers", (userIds) => setOnlineUserIds(userIds));
 
+    // --- NEW LOGIC ADDED: Listening for Typing Events from others ---
+    socket.on("typing", (data) => {
+      const currentDest = activeDestRef.current;
+      if (!currentDest) return;
+      
+      const isForCurrentChannel = currentDest.isChannel && data.channelId === currentDest._id;
+      const isForCurrentDM = !currentDest.isChannel && data.senderId === currentDest._id;
+      
+      if (isForCurrentChannel || isForCurrentDM) {
+        setIsTyping(true);
+        setTypingUser(data.senderName);
+      }
+    });
+
+    socket.on("stopTyping", (data) => {
+      const currentDest = activeDestRef.current;
+      if (!currentDest) return;
+      
+      const isForCurrentChannel = currentDest.isChannel && data.channelId === currentDest._id;
+      const isForCurrentDM = !currentDest.isChannel && data.senderId === currentDest._id;
+      
+      if (isForCurrentChannel || isForCurrentDM) {
+        setIsTyping(false);
+        setTypingUser("");
+      }
+    });
+    // ----------------------------------------------------------------
+
     const handleReceive = (newMsg) => {
       const currentDest = activeDestRef.current;
       const currentThread = activeThreadRef.current;
 
-      const incomingSenderId = typeof newMsg.senderId === 'object' ? newMsg.senderId._id : newMsg.senderId;
-      const incomingReceiverId = typeof newMsg.receiverId === 'object' ? newMsg.receiverId._id : newMsg.receiverId;
-      const incomingChannelId = typeof newMsg.channelId === 'object' ? newMsg.channelId?._id : newMsg.channelId;
+      const incomingSenderId = newMsg.senderId?._id || newMsg.senderId;
+      const incomingReceiverId = newMsg.receiverId?._id || newMsg.receiverId;
+      const incomingChannelId = newMsg.channelId?._id || newMsg.channelId;
 
       if (incomingChannelId) bubbleToTop(incomingChannelId, true);
       else if (incomingSenderId !== user._id) bubbleToTop(incomingSenderId, false);
@@ -127,6 +210,11 @@ const Workspace = () => {
 
       if (isForCurrentChannel || (isForCurrentDM && !isFromMe) || isFromMe) {
         setMessages((prev) => [...prev, newMsg]);
+        // Also stop their typing indicator immediately if they send a message
+        if (!isFromMe) {
+           setIsTyping(false);
+           setTypingUser("");
+        }
       } else {
         const idToIncrement = incomingChannelId || incomingSenderId;
         setUnreadCounts(prev => ({
@@ -155,18 +243,27 @@ const Workspace = () => {
     return () => {
       socket.off("connect", joinRooms);
       socket.off("getOnlineUsers");
+      socket.off("typing");
+      socket.off("stopTyping");
       socket.off("receiveMessage", handleReceive);
       socket.off("messageUpdated", handleUpdate);
       socket.off("messageReacted", handleUpdate);
       socket.off("messageDeleted", handleDeleted); 
     };
-  }, [user]); 
+  }, [user, channels]); 
 
   useEffect(() => { scrollRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
   useEffect(() => { threadScrollRef.current?.scrollIntoView({ behavior: "smooth" }); }, [threadMessages]);
 
   const handleSubmit = async (text, fileUrl = "") => {
     if (!text.trim() && !fileUrl) return;
+
+    // Immediately tell everyone we stopped typing
+    socket.emit("stopTyping", {
+      channelId: activeDestination?.isChannel ? activeDestination._id : null,
+      receiverId: !activeDestination?.isChannel ? activeDestination._id : null
+    });
+
     try {
       if (editingMessage) {
         const res = await API.put(`/messages/${editingMessage._id}`, { text });
@@ -248,6 +345,7 @@ const Workspace = () => {
     setChannels((prev) => [newChannel, ...prev]); 
     setActiveDestination({ ...newChannel, isChannel: true });
     socket.emit("setup", user);
+    socket.emit("joinRoom", newChannel._id); 
     setIsSidebarOpen(false); 
   };
 
@@ -294,10 +392,7 @@ const Workspace = () => {
             </div>
             {!isThreadView && <button onClick={async () => { setActiveThread(msg); try { const res = await API.get(`/messages/${msg._id}?isThread=true`); setThreadMessages(res.data); } catch (err) { console.error(err); } }} className="hover:bg-gray-100 p-1 rounded">💬</button>}
             {isMe && <button onClick={() => setEditingMessage(msg)} className="hover:bg-gray-100 p-1 rounded">✏️</button>}
-            
-            {/* --- NEW LOGIC ADDED: Single Trash Button to open the menu --- */}
             <button onClick={() => setMessageToDelete(msg)} className="hover:bg-gray-100 p-1 rounded text-red-500" title="Delete Message">🗑️</button>
-            {/* ------------------------------------------------------------- */}
           </div>
         )}
       </div>
@@ -348,6 +443,13 @@ const Workspace = () => {
             })}
           </div>
         </div>
+
+        <div className="p-4 border-t border-white/10">
+          <button onClick={handleLogout} className="flex items-center gap-3 w-full text-gray-300 hover:text-white hover:bg-white/10 p-2 rounded-lg transition font-medium text-sm">
+            <LogOut size={18} />
+            <span>Sign Out</span>
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 flex flex-col bg-white relative z-10 w-full overflow-hidden">
@@ -369,7 +471,7 @@ const Workspace = () => {
                     <span className="text-xs text-gray-500">
                       {onlineUserIds.includes(activeDestination._id) 
                         ? <span className="text-green-500 font-medium">🟢 Online</span> 
-                        : `Last seen: ${activeDestination.lastSeen ? new Date(activeDestination.lastSeen).toLocaleString([], {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'}) : 'Recently'}`
+                        : `last seen ${formatLastSeen(activeDestination.lastSeen)}`
                       }
                     </span>
                   )}
@@ -388,13 +490,59 @@ const Workspace = () => {
 
         <div className="p-3 md:p-4 border-t bg-white flex flex-col gap-2 z-10 relative shadow-[0_-4px_10px_rgba(0,0,0,0.02)]">
           {editingMessage && <div className="text-xs text-amber-700 flex justify-between bg-amber-50 p-2 rounded border border-amber-200 items-center"><span>Modifying entry...</span><button onClick={() => setEditingMessage(null)} className="font-bold hover:underline">Cancel</button></div>}
+          
+          {/* --- NEW LOGIC ADDED: Animated Typing Indicator UI --- */}
+          {isTyping && (
+            <div className="absolute -top-7 left-4 text-xs text-blue-500 font-medium flex items-center gap-2 bg-white/90 backdrop-blur-sm px-3 py-1 rounded-t-lg shadow-sm border border-b-0 border-gray-200">
+              <span className="flex gap-1">
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce"></span>
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></span>
+                <span className="w-1.5 h-1.5 bg-blue-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
+              </span>
+              {typingUser} is typing...
+            </div>
+          )}
+          {/* --------------------------------------------------- */}
+
           <div className="flex items-center gap-2">
             <label className="cursor-pointer bg-gray-100 border border-gray-300 hover:bg-gray-200 text-gray-600 p-2 md:p-3 rounded-xl flex justify-center items-center transition shadow-sm active:scale-95">
               <span className="text-lg leading-none">📎</span>
               <input type="file" onChange={handleFileUpload} className="hidden" accept="image/*" disabled={!activeDestination || uploading} />
             </label>
             <div className="flex-1 border border-gray-300 rounded-xl bg-white shadow-sm focus-within:ring-2 focus-within:ring-blue-500 overflow-hidden flex items-center">
-              <input type="text" placeholder={uploading ? "Uploading..." : !activeDestination ? "Select conversation" : `Message ${activeDestination?.name ? '#' + activeDestination.name : activeDestination?.username}`} disabled={!activeDestination || uploading} onKeyDown={(e) => { if(e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit(e.target.value); e.target.value=""; } }} className="w-full p-2 md:p-3 text-sm outline-none disabled:bg-gray-100 text-gray-800" />
+              
+              {/* --- NEW LOGIC ADDED: onChange Handler to emit typing event --- */}
+              <input 
+                type="text" 
+                placeholder={uploading ? "Uploading..." : !activeDestination ? "Select conversation" : `Message ${activeDestination?.name ? '#' + activeDestination.name : activeDestination?.username}`} 
+                disabled={!activeDestination || uploading} 
+                onChange={(e) => {
+                  if (!activeDestination) return;
+                  socket.emit("typing", {
+                    senderId: user._id,
+                    senderName: user.username,
+                    channelId: activeDestination.isChannel ? activeDestination._id : null,
+                    receiverId: !activeDestination.isChannel ? activeDestination._id : null
+                  });
+                  if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+                  typingTimeoutRef.current = setTimeout(() => {
+                    socket.emit("stopTyping", {
+                      senderId: user._id,
+                      channelId: activeDestination.isChannel ? activeDestination._id : null,
+                      receiverId: !activeDestination.isChannel ? activeDestination._id : null
+                    });
+                  }, 2000);
+                }}
+                onKeyDown={(e) => { 
+                  if(e.key === "Enter" && !e.shiftKey) { 
+                    e.preventDefault(); 
+                    handleSubmit(e.target.value); 
+                    e.target.value=""; 
+                  } 
+                }} 
+                className="w-full p-2 md:p-3 text-sm outline-none disabled:bg-gray-100 text-gray-800" 
+              />
+              {/* ------------------------------------------------------------ */}
             </div>
           </div>
         </div>
@@ -411,42 +559,21 @@ const Workspace = () => {
       <CreateChannelModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} onChannelCreated={handleChannelCreated} />
       <SettingsModal isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} />
 
-      {/* --- NEW LOGIC ADDED: WhatsApp-Style Delete Modal Overlay --- */}
       {messageToDelete && (
         <div className="fixed inset-0 bg-black/50 z-[100] flex items-center justify-center p-4">
           <div className="bg-white rounded-xl p-4 w-full max-w-xs shadow-2xl flex flex-col gap-2 animate-in zoom-in duration-200">
             <h3 className="font-bold text-gray-800 mb-2 px-2">Delete Message?</h3>
             
-            {/* Only show 'Delete for everyone' if it's the current user's message */}
             {(typeof messageToDelete.senderId === 'object' ? messageToDelete.senderId._id : messageToDelete.senderId) === user._id && (
-              <button 
-                onClick={() => { handleDeleteMessage(messageToDelete._id, "everyone"); setMessageToDelete(null); }}
-                className="w-full text-left px-3 py-2.5 text-red-600 hover:bg-gray-100 font-medium rounded-lg transition"
-              >
-                Delete for everyone
-              </button>
+              <button onClick={() => { handleDeleteMessage(messageToDelete._id, "everyone"); setMessageToDelete(null); }} className="w-full text-left px-3 py-2.5 text-red-600 hover:bg-gray-100 font-medium rounded-lg transition">Delete for everyone</button>
             )}
             
-            <button 
-              onClick={() => { handleDeleteMessage(messageToDelete._id, "me"); setMessageToDelete(null); }}
-              className="w-full text-left px-3 py-2.5 text-red-600 hover:bg-gray-100 font-medium rounded-lg transition"
-            >
-              Delete for me
-            </button>
-            
+            <button onClick={() => { handleDeleteMessage(messageToDelete._id, "me"); setMessageToDelete(null); }} className="w-full text-left px-3 py-2.5 text-red-600 hover:bg-gray-100 font-medium rounded-lg transition">Delete for me</button>
             <div className="border-t my-1"></div>
-            
-            <button 
-              onClick={() => setMessageToDelete(null)}
-              className="w-full text-left px-3 py-2.5 text-gray-700 hover:bg-gray-100 font-medium rounded-lg transition"
-            >
-              Cancel
-            </button>
+            <button onClick={() => setMessageToDelete(null)} className="w-full text-left px-3 py-2.5 text-gray-700 hover:bg-gray-100 font-medium rounded-lg transition">Cancel</button>
           </div>
         </div>
       )}
-      {/* ----------------------------------------------------------- */}
-
     </div>
   );
 };
