@@ -28,6 +28,13 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: "Hey there!",
     },
+    
+    // --- NEW LOGIC ADDED: For tracking Online/Offline status later ---
+    lastSeen: {
+      type: Date,
+      default: Date.now,
+    }
+    // -----------------------------------------------------------------
   },
   {
     timestamps: true,
